@@ -14,10 +14,11 @@ export interface JWTPayload {
   username: string;
   role: string;
   jti: string;
+  exp?: number;
 }
 
-/** Claims supplied by callers when signing — `jti` is injected inside. */
-export type SignableJWTClaims = Omit<JWTPayload, "jti">;
+/** Claims supplied by callers when signing — `jti` / `exp` are injected inside. */
+export type SignableJWTClaims = Omit<JWTPayload, "jti" | "exp">;
 
 const JWT_ALGORITHM: jwt.Algorithm = "HS256";
 

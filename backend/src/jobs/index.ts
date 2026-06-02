@@ -4,6 +4,7 @@ import { cleanupArchivedProjects } from "./archive.cleanup";
 import { cleanupRecycleBin } from "./recyclebin.cleanup";
 import { processNotificationEscalation } from "./notification.escalation";
 import { cleanupExpiredDownloadLinks } from "./download.cleanup";
+import { cleanupExpiredRevokedTokenEntries } from "./revoked-token.cleanup";
 
 /**
  * Register all background jobs with the scheduler.
@@ -44,6 +45,14 @@ export function registerAllJobs(): void {
     name: "download-cleanup",
     cronExpression: "*/30 * * * * *",
     job: cleanupExpiredDownloadLinks,
+  });
+
+  // R9: Revoked JWT Cleanup - startup + daily at 2:00 AM
+  scheduler.register({
+    name: "revoked-token-cleanup",
+    cronExpression: "0 2 * * *",
+    job: cleanupExpiredRevokedTokenEntries,
+    runOnStart: true,
   });
 }
 

@@ -53,7 +53,9 @@ export async function logout(
   next: NextFunction
 ): Promise<void> {
   try {
-    const result = await authService.logoutUser(req.user!.id);
+    const authHeader = req.headers.authorization || "";
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
+    const result = await authService.logoutUser(req.user!.id, token);
     successResponse(res, result);
   } catch (error) {
     next(error);

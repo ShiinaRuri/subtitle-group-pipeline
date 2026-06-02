@@ -11,6 +11,7 @@ import { z } from "zod";
 
 // Route imports
 import authRoutes from "./modules/auth/auth.routes";
+import { qqRouteRateLimit, qqVerifyRateLimit } from "./middleware/rateLimit";
 import projectRoutes from "./modules/project/project.routes";
 import templateRoutes from "./modules/template/template.routes";
 import taskRoutes from "./modules/task/task.routes";
@@ -90,7 +91,7 @@ export function createApp(options: { databaseReady?: boolean } = {}): Applicatio
   // NoneBot QQ verification webhook (public, but requires QQ bridge token).
   // R2: enforce bridge-token auth before any body parsing or Auth_Service calls.
   // group_id is attacker-controllable and MUST NOT be used as a trust credential.
-  app.post("/webhook/qq-verify", async (req, res, next) => {
+  app.post("/webhook/qq-verify", qqVerifyRateLimit, async (req, res, next) => {
     try {
       await ensureBridgeToken(req);
       const { message, group_id } = req.body || {};
@@ -161,7 +162,7 @@ export function createApp(options: { databaseReady?: boolean } = {}): Applicatio
   app.use(`${apiPrefix}/storage`, storageRoutes);
   app.use(`${apiPrefix}/announcements`, announcementRoutes);
   app.use(`${apiPrefix}/timeline`, timelineRoutes);
-  app.use(`${apiPrefix}/qq`, qqRoutes);
+  app.use(`${apiPrefix}/qq`, qqRouteRateLimit, qqRoutes);
   app.use(`${apiPrefix}/system`, systemRoutes);
 
   // Compatibility aliases for frontend callers that use root-level member URLs.
