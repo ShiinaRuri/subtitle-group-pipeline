@@ -7,11 +7,9 @@
  * each real client falls into its own bucket instead of every request
  * collapsing onto the loopback peer (R5).
  *
- * Implementation note: the project did not pin `express-rate-limit` as a
- * dependency historically (see `auth.routes.ts`), so this module follows the
- * same try-require + in-memory fallback pattern. Both backends honor the
- * same `getClientIp` keying so the limiter behaves consistently regardless
- * of which path is taken at runtime.
+ * Implementation note: `express-rate-limit` is the primary backend. The
+ * in-memory fallback remains as a defensive test/runtime safety net; both
+ * backends honor the same `getClientIp` keying so bucketing stays consistent.
  *
  * Error response (uniform across all limiters):
  *   HTTP 429
@@ -35,6 +33,7 @@ const DEFAULT_MESSAGE = "Too many requests, please try again later.";
 // Track every in-memory store so tests (and `resetRateLimiters`) can wipe state
 // without needing handles to individual limiters.
 const inMemoryStores: Array<Map<string, { count: number; resetTime: number }>> = [];
+const packageStores: Array<{ resetAll?: () => Promise<void> | void }> = [];
 
 /**
  * Reset all in-memory limiter buckets. Intended for test isolation; harmless
@@ -44,6 +43,9 @@ const inMemoryStores: Array<Map<string, { count: number; resetTime: number }>> =
 export function resetRateLimiters(): void {
   for (const store of inMemoryStores) {
     store.clear();
+  }
+  for (const store of packageStores) {
+    void store.resetAll?.();
   }
 }
 
@@ -99,11 +101,14 @@ function createRateLimiter(opts: RateLimitOptions): RequestHandler {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const rl = require("express-rate-limit");
+    const store = new rl.MemoryStore();
+    packageStores.push(store);
     return rl({
       windowMs: opts.windowMs,
       max: opts.max,
       standardHeaders: true,
       legacyHeaders: false,
+      store,
       keyGenerator: (req: Request) => getClientIp(req),
       handler: (_req: Request, res: Response) => send429(res, message),
     }) as RequestHandler;

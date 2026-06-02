@@ -25,7 +25,7 @@ describe("Subtitle Processing Tests", () => {
   let app: Application;
 
   beforeAll(() => {
-    app = createApp();
+    app = createApp({ databaseReady: true });
   });
 
   beforeEach(async () => {

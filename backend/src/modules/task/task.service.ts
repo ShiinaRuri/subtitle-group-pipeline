@@ -2903,14 +2903,6 @@ export async function claimTranslationSegment(
     );
   }
 
-  if (membership.role !== "supervisor" && task.assignee_id !== userId) {
-    throw new AppError(
-      "Only the assigned member can claim segments in this translation task",
-      "FORBIDDEN",
-      403
-    );
-  }
-
   if (membership.role !== "supervisor") {
     await assertTaskClaimRoleTagAccess(
       userId,
@@ -2937,6 +2929,15 @@ export async function claimTranslationSegment(
       throw new AppError(
         `Segment end exceeds episode length (${task.unit.episode_length}s)`,
         "VALIDATION_ERROR",
+        400
+      );
+    }
+
+    const coveredSeconds = await getTranslationCoverageSeconds(task);
+    if (coveredSeconds >= task.unit.episode_length) {
+      throw new AppError(
+        "Translation segments are already fully claimed",
+        "BAD_REQUEST",
         400
       );
     }
