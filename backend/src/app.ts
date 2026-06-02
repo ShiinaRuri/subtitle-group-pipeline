@@ -41,6 +41,10 @@ import {
   updateMemberProfileSchema,
 } from "./modules/auth/auth.schema";
 
+const SAFE_COMBINED_LOG_FORMAT =
+  ':remote-addr - :remote-user [:date[clf]] ":method :safe-url HTTP/:http-version" ' +
+  ':status :res[content-length] ":referrer" ":user-agent"';
+
 export function createApp(options: { databaseReady?: boolean } = {}): Application {
   const app = express();
   setupState.databaseReady = options.databaseReady ?? setupState.databaseReady;
@@ -56,10 +60,14 @@ export function createApp(options: { databaseReady?: boolean } = {}): Applicatio
   );
 
   // Logging
+  morgan.token("safe-url", (req) => {
+    const url = ((req as typeof req & { originalUrl?: string }).originalUrl || req.url || "");
+    return url.replace(/^(\/download\/)[^/?]+/, "$1[REDACTED]");
+  });
   if (env.NODE_ENV === "development") {
     app.use(morgan("dev"));
   } else {
-    app.use(morgan("combined"));
+    app.use(morgan(SAFE_COMBINED_LOG_FORMAT));
   }
 
   // Body parsing
