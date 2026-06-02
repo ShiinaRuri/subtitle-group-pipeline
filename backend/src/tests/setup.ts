@@ -403,6 +403,7 @@ export async function createTestAnnouncement(data: {
 
 const tableNames = [
   "auditLog",
+  "revokedToken",
   "timelineEvent",
   "comment",
   "reviewSnapshot",

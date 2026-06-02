@@ -1,11 +1,12 @@
 import { prisma } from "../../config/database";
 import { AppError } from "../../utils/response";
-import { TaskStatus, TimelineEventType } from "@prisma/client";
+import { TaskStatus, TimelineEventType, UserRole } from "@prisma/client";
 import * as auditService from "../audit/audit.service";
 import * as timelineService from "../timeline/timeline.service";
 import * as notificationService from "../notification/notification.service";
 import { permanentlyDeleteProjectById } from "../../jobs/recyclebin.cleanup";
 import { normalizeUploadPolicyJson } from "../../utils/uploadPolicy";
+import { assertProjectViewPermission } from "../file/file.service";
 import type {
   CreateProjectInput,
   CreateProjectFromTemplateInput,
@@ -572,7 +573,9 @@ export async function getProjects(query: ProjectQueryInput, userId?: string) {
   };
 }
 
-export async function getProjectById(projectId: string) {
+export async function getProjectById(projectId: string, userId: string, userRole: UserRole) {
+  await assertProjectViewPermission(projectId, userId, userRole);
+
   const project = await prisma.project.findUnique({
     where: { id: projectId, deleted_at: null },
     include: {
@@ -1011,7 +1014,9 @@ export async function permanentlyDeleteProject(
   return { deleted: true, id: projectId };
 }
 
-export async function getProjectMembers(projectId: string) {
+export async function getProjectMembers(projectId: string, userId: string, userRole: UserRole) {
+  await assertProjectViewPermission(projectId, userId, userRole);
+
   const project = await prisma.project.findUnique({
     where: { id: projectId, deleted_at: null },
   });

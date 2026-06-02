@@ -24,9 +24,9 @@ const idParamSchema = z.object({ id: z.string().uuid("Invalid project ID") });
 const requestIdParamSchema = z.object({ requestId: z.string().uuid("Invalid request ID") });
 const userIdParamSchema = z.object({ userId: z.string().uuid("Invalid user ID") });
 
-// Public routes
-router.get("/", validateQuery(projectQuerySchema), controller.getProjects);
-router.get("/:id", validateParams(idParamSchema), controller.getProject);
+// Project read routes (authenticated)
+router.get("/", authenticate, validateQuery(projectQuerySchema), controller.getProjects);
+router.get("/:id", authenticate, validateParams(idParamSchema), controller.getProject);
 
 // Project creation
 router.post("/", authenticate, validateBody(createProjectSchema), controller.createProject);
@@ -48,7 +48,7 @@ router.delete("/:id/permanent", authenticate, requireRole("super_admin", "group_
 router.delete("/:id", authenticate, validateParams(idParamSchema), controller.softDeleteProject);
 
 // Members
-router.get("/:id/members", validateParams(idParamSchema), controller.getProjectMembers);
+router.get("/:id/members", authenticate, validateParams(idParamSchema), controller.getProjectMembers);
 router.post("/:id/members", authenticate, validateParams(idParamSchema), validateBody(addMemberSchema), controller.addMember);
 router.patch("/:id/members/:userId", authenticate, validateParams(z.object({ id: z.string().uuid(), userId: z.string().uuid() })), validateBody(updateMemberSchema), controller.updateMember);
 router.delete("/:id/members/:userId", authenticate, validateParams(z.object({ id: z.string().uuid(), userId: z.string().uuid() })), controller.removeMember);

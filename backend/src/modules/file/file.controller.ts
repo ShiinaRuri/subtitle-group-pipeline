@@ -712,14 +712,16 @@ export async function replaceFile(
 
 // GET /projects/:projectId/files - List files
 export async function getProjectFiles(
-  req: Request,
+  req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
     const result = await fileService.getProjectFiles(
       getProjectId(req),
-      req.query as unknown as Parameters<typeof fileService.getProjectFiles>[1]
+      req.query as unknown as Parameters<typeof fileService.getProjectFiles>[1],
+      req.user!.id,
+      req.user!.role as "super_admin" | "group_admin" | "supervisor" | "member"
     );
     successResponse(res, { files: result.files, links: result.links, items: result.items }, 200, result.meta);
   } catch (error) {
@@ -729,12 +731,16 @@ export async function getProjectFiles(
 
 // GET /files/:fileId - File detail
 export async function getFile(
-  req: Request,
+  req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
-    const result = await fileService.getFileById(getParam(req, "fileId"));
+    const result = await fileService.getFileById(
+      getParam(req, "fileId"),
+      req.user!.id,
+      req.user!.role as "super_admin" | "group_admin" | "supervisor" | "member"
+    );
     successResponse(res, result);
   } catch (error) {
     next(error);
@@ -743,12 +749,16 @@ export async function getFile(
 
 // GET /files/:fileId/versions - Version history
 export async function getFileVersions(
-  req: Request,
+  req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
-    const result = await fileService.getFileVersions(getParam(req, "fileId"));
+    const result = await fileService.getFileVersions(
+      getParam(req, "fileId"),
+      req.user!.id,
+      req.user!.role as "super_admin" | "group_admin" | "supervisor" | "member"
+    );
     successResponse(res, result);
   } catch (error) {
     next(error);

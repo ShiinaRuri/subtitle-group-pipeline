@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { prisma } from "../../config/database";
 import { hashPassword, comparePassword } from "../../utils/password";
 import { signToken, signRefreshToken, verifyToken } from "../../utils/jwt";
@@ -39,7 +40,7 @@ function generateVerificationCode(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let result = "";
   for (let i = 0; i < 8; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+    result += chars.charAt(crypto.randomInt(chars.length));
   }
   return result;
 }
@@ -1192,15 +1193,13 @@ export async function resetMemberTagStatuses(userId: string, data: ResetTagStatu
   return getAllUsers();
 }
 
-const userSelect = {
+const baseUserSelect = {
   id: true,
   username: true,
   nickname: true,
-  email: true,
   avatar_url: true,
   role: true,
   status: true,
-  qq_number: true,
   created_at: true,
   tag_applications: {
     where: { approved: true },
@@ -1218,6 +1217,12 @@ const userSelect = {
     },
     orderBy: { created_at: "asc" as const },
   },
+};
+
+const privilegedUserSelect = {
+  ...baseUserSelect,
+  email: true,
+  qq_number: true,
 };
 
 function serializeManagedUser<T extends { tag_applications?: Array<{ tag: unknown }> }>(user: T) {
@@ -1273,7 +1278,7 @@ export async function createMember(actorId: string, data: CreateMemberInput) {
         role: data.role,
         status: data.status,
       },
-      select: userSelect,
+      select: privilegedUserSelect,
     });
 
     for (const tagId of uniqueTagIds) {
@@ -1291,7 +1296,7 @@ export async function createMember(actorId: string, data: CreateMemberInput) {
 
     return tx.user.findUniqueOrThrow({
       where: { id: created.id },
-      select: userSelect,
+      select: privilegedUserSelect,
     });
   });
 
@@ -1345,7 +1350,7 @@ export async function updateMemberProfile(
   const updated = await prisma.user.update({
     where: { id: target.id },
     data: updateData,
-    select: userSelect,
+    select: privilegedUserSelect,
   });
 
   if (
@@ -1413,7 +1418,7 @@ export async function grantMemberTagStatuses(
 
     return tx.user.findUniqueOrThrow({
       where: { id: target.id },
-      select: userSelect,
+      select: privilegedUserSelect,
     });
   });
 
@@ -1422,7 +1427,7 @@ export async function grantMemberTagStatuses(
 
 export async function getAllUsers() {
   const users = await prisma.user.findMany({
-    select: userSelect,
+    select: privilegedUserSelect,
     orderBy: { created_at: "desc" },
   });
   return users.map(serializeManagedUser);
@@ -1448,7 +1453,7 @@ export async function updateUserRole(userId: string, data: UpdateUserRoleInput, 
   const updated = await prisma.user.update({
     where: { id: userId },
     data: { role: data.role },
-    select: userSelect,
+    select: privilegedUserSelect,
   });
   return serializeManagedUser(updated);
 }
@@ -1463,7 +1468,7 @@ export async function updateUserStatus(userId: string, data: UpdateUserStatusInp
   const updated = await prisma.user.update({
     where: { id: userId },
     data: { status: data.status },
-    select: userSelect,
+    select: privilegedUserSelect,
   });
   return serializeManagedUser(updated);
 }
@@ -1501,7 +1506,7 @@ export async function approveUserVerification(userId: string, actorId?: string) 
     return tx.user.update({
       where: { id: userId },
       data: { status: "active" },
-      select: userSelect,
+      select: privilegedUserSelect,
     });
   });
 

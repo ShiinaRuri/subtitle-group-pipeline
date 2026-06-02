@@ -459,66 +459,6 @@ function formatPrismaCommandError(error: unknown): string {
     .trim();
 }
 
-function sqlString(value: string | null | undefined): string {
-  if (value === null || value === undefined) return "NULL";
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-function sqlBool(value: boolean, provider: "sqlite" | "mysql" | "postgresql"): string {
-  if (provider === "postgresql") return value ? "true" : "false";
-  return value ? "1" : "0";
-}
-
-function sqlNow(provider: "sqlite" | "mysql" | "postgresql"): string {
-  if (provider === "postgresql") return "CURRENT_TIMESTAMP";
-  return "CURRENT_TIMESTAMP";
-}
-
-function quoteIdent(identifier: string, provider: "sqlite" | "mysql" | "postgresql"): string {
-  return provider === "mysql" ? `\`${identifier}\`` : `"${identifier}"`;
-}
-
-async function executeSql(databaseUrl: string, provider: "sqlite" | "mysql" | "postgresql", sql: string) {
-  const env = { ...process.env, DATABASE_URL: databaseUrlForPrismaCli(databaseUrl, provider) };
-  const id = crypto.randomUUID();
-  const tempSchemaPath = path.join(SCHEMA_DIR, `.setup-sql-${id}.prisma`);
-  const sqlPath = path.join(SCHEMA_DIR, `.setup-sql-${id}.sql`);
-  try {
-    fs.writeFileSync(tempSchemaPath, buildPrismaSchema(provider));
-    fs.writeFileSync(sqlPath, sql);
-    await runPrismaCommand(["db", "execute", "--schema", tempSchemaPath, "--file", sqlPath], env);
-  } finally {
-    fs.rmSync(tempSchemaPath, { force: true });
-    fs.rmSync(sqlPath, { force: true });
-  }
-}
-
-function buildBootstrapSql(args: {
-  provider: "sqlite" | "mysql" | "postgresql";
-  adminId: string;
-  username: string;
-  passwordHash: string;
-  nickname: string;
-  email?: string;
-  storageId: string;
-  storageName: string;
-  backendType: string;
-  storageConfig: string;
-  quotaBytes?: number | null;
-}) {
-  const q = (identifier: string) => quoteIdent(identifier, args.provider);
-  const userTable = q("User");
-  const storageTable = q("StorageBackend");
-  const now = sqlNow(args.provider);
-  const quota = args.quotaBytes === null || args.quotaBytes === undefined ? "NULL" : String(args.quotaBytes);
-
-  return [
-    `INSERT INTO ${userTable} (${q("id")}, ${q("username")}, ${q("nickname")}, ${q("email")}, ${q("password_hash")}, ${q("role")}, ${q("status")}, ${q("created_at")}, ${q("updated_at")}) VALUES (${sqlString(args.adminId)}, ${sqlString(args.username)}, ${sqlString(args.nickname)}, ${sqlString(args.email)}, ${sqlString(args.passwordHash)}, ${sqlString("super_admin")}, ${sqlString("active")}, ${now}, ${now});`,
-    `UPDATE ${storageTable} SET ${q("is_default")} = ${sqlBool(false, args.provider)}, ${q("updated_at")} = ${now};`,
-    `INSERT INTO ${storageTable} (${q("id")}, ${q("name")}, ${q("backend_type")}, ${q("config")}, ${q("is_default")}, ${q("is_active")}, ${q("quota_bytes")}, ${q("used_bytes")}, ${q("file_count")}, ${q("created_at")}, ${q("updated_at")}) VALUES (${sqlString(args.storageId)}, ${sqlString(args.storageName)}, ${sqlString(args.backendType)}, ${sqlString(args.storageConfig)}, ${sqlBool(true, args.provider)}, ${sqlBool(true, args.provider)}, ${quota}, 0, 0, ${now}, ${now});`,
-  ].join("\n");
-}
-
 export async function getSetupStatus() {
   const databaseReady = await canConnectDatabase();
   if (!databaseReady) {
@@ -545,65 +485,11 @@ export async function getSetupStatus() {
   };
 }
 
-export async function completeSetup(input: CompleteSetupInput) {
-  const inferred = inferProvider(input.database.url);
-  const selectedProvider = prismaProvider(input.database.provider);
-  if (prismaProvider(inferred) !== selectedProvider) {
-    throw new AppError("Database provider does not match URL scheme", "VALIDATION_ERROR", 400);
-  }
-  const databaseUrl = databaseUrlForPrismaCli(input.database.url, selectedProvider);
-
-  const passwordHash = await hashPassword(input.admin.password);
-  const backendType = input.storage.backend_type as "local" | "s3" | "s3_compatible";
-  const config = storageService.normalizeStorageConfig(backendType, input.storage.config);
-  await storageService.validateStorageBackendConfig(backendType, config);
-  await syncSchema(databaseUrl, selectedProvider);
-
-  if (selectedProvider !== "sqlite") {
-    const adminId = crypto.randomUUID();
-    const storageId = crypto.randomUUID();
-    const sql = buildBootstrapSql({
-      provider: selectedProvider,
-      adminId,
-      username: input.admin.username,
-      passwordHash,
-      nickname: input.admin.nickname || input.admin.username,
-      email: input.admin.email,
-      storageId,
-      storageName: input.storage.name,
-      backendType: input.storage.backend_type,
-      storageConfig: config,
-      quotaBytes: input.storage.quota_bytes,
-    });
-    await executeSql(databaseUrl, selectedProvider, sql);
-    updateEnvFile({ DATABASE_URL: databaseUrl, JWT_SECRET: input.security.jwt_secret });
-    process.env.DATABASE_URL = databaseUrl;
-    process.env.JWT_SECRET = input.security.jwt_secret;
-    env.JWT_SECRET = input.security.jwt_secret;
-    await generatePrismaClient(databaseUrl, selectedProvider);
-    scheduleServerRestart();
-
-    return {
-      initialized: true,
-      restartRequired: false,
-      restarting: true,
-      message: "初始化完成，服务正在自动重启以加载所选数据库类型。",
-      admin: { id: adminId, username: input.admin.username, role: "super_admin" },
-      storage: { id: storageId, name: input.storage.name, backend_type: input.storage.backend_type, is_default: true },
-    };
-  }
-
-  updateEnvFile({ DATABASE_URL: databaseUrl, JWT_SECRET: input.security.jwt_secret });
-  process.env.DATABASE_URL = databaseUrl;
-  process.env.JWT_SECRET = input.security.jwt_secret;
-  env.JWT_SECRET = input.security.jwt_secret;
-  await configurePrisma(databaseUrl);
-
-  const status = await getSetupStatus();
-  if (status.initialized) {
-    throw new AppError("System is already initialized", "ALREADY_INITIALIZED", 409);
-  }
-
+async function createInitialSetupRecords(
+  input: CompleteSetupInput,
+  passwordHash: string,
+  storageConfig: string
+) {
   const [admin, storage] = await prisma.$transaction(async (tx) => {
     const createdAdmin = await tx.user.create({
       data: {
@@ -630,7 +516,7 @@ export async function completeSetup(input: CompleteSetupInput) {
       data: {
         name: input.storage.name,
         backend_type: input.storage.backend_type,
-        config,
+        config: storageConfig,
         is_default: true,
         is_active: true,
         quota_bytes:
@@ -642,6 +528,76 @@ export async function completeSetup(input: CompleteSetupInput) {
 
     return [createdAdmin, storageService.serializeStorageBackend(createdStorage)] as const;
   });
+
+  return { admin, storage };
+}
+
+export async function completeSetup(input: CompleteSetupInput) {
+  // R1 (security-vulnerability-remediation): Unified initialized-state guard.
+  // This must run BEFORE any side effects — schema sync, bootstrap writes,
+  // env file updates, or scheduleServerRestart — so that a re-init attempt
+  // against an already-initialized system writes no rows, mutates no env file,
+  // and triggers no restart, regardless of database provider.
+  // The SQLite branch retains its own post-configurePrisma ALREADY_INITIALIZED
+  // check as defense in depth against a transactional race after this point.
+  const preSetupStatus = await getSetupStatus();
+  if (preSetupStatus.initialized) {
+    throw new AppError("System is already initialized", "ALREADY_INITIALIZED", 409);
+  }
+
+  const inferred = inferProvider(input.database.url);
+  const selectedProvider = prismaProvider(input.database.provider);
+  if (prismaProvider(inferred) !== selectedProvider) {
+    throw new AppError("Database provider does not match URL scheme", "VALIDATION_ERROR", 400);
+  }
+  const databaseUrl = databaseUrlForPrismaCli(input.database.url, selectedProvider);
+
+  const passwordHash = await hashPassword(input.admin.password);
+  const backendType = input.storage.backend_type as "local" | "s3" | "s3_compatible";
+  const config = storageService.normalizeStorageConfig(backendType, input.storage.config);
+  await storageService.validateStorageBackendConfig(backendType, config);
+  await syncSchema(databaseUrl, selectedProvider);
+
+  if (selectedProvider !== "sqlite") {
+    await generatePrismaClient(databaseUrl, selectedProvider);
+    await configurePrisma(databaseUrl);
+
+    const status = await getSetupStatus();
+    if (status.initialized) {
+      throw new AppError("System is already initialized", "ALREADY_INITIALIZED", 409);
+    }
+
+    const { admin, storage } = await createInitialSetupRecords(input, passwordHash, config);
+
+    updateEnvFile({ DATABASE_URL: databaseUrl, JWT_SECRET: input.security.jwt_secret });
+    process.env.DATABASE_URL = databaseUrl;
+    process.env.JWT_SECRET = input.security.jwt_secret;
+    env.JWT_SECRET = input.security.jwt_secret;
+    setupState.databaseReady = true;
+    scheduleServerRestart();
+
+    return {
+      initialized: true,
+      restartRequired: false,
+      restarting: true,
+      message: "初始化完成，服务正在自动重启以加载所选数据库类型。",
+      admin,
+      storage,
+    };
+  }
+
+  updateEnvFile({ DATABASE_URL: databaseUrl, JWT_SECRET: input.security.jwt_secret });
+  process.env.DATABASE_URL = databaseUrl;
+  process.env.JWT_SECRET = input.security.jwt_secret;
+  env.JWT_SECRET = input.security.jwt_secret;
+  await configurePrisma(databaseUrl);
+
+  const status = await getSetupStatus();
+  if (status.initialized) {
+    throw new AppError("System is already initialized", "ALREADY_INITIALIZED", 409);
+  }
+
+  const { admin, storage } = await createInitialSetupRecords(input, passwordHash, config);
 
   setupState.databaseReady = true;
 

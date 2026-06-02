@@ -27,6 +27,21 @@ export async function authenticate(
     const token = authHeader.substring(7);
     const payload = verifyToken(token);
 
+    if (!payload.jti) {
+      errorResponse(res, "Authentication failed", "UNAUTHORIZED", 401);
+      return;
+    }
+
+    const revokedToken = await prisma.revokedToken.findUnique({
+      where: { jti: payload.jti },
+      select: { jti: true },
+    });
+
+    if (revokedToken) {
+      errorResponse(res, "Authentication failed", "UNAUTHORIZED", 401);
+      return;
+    }
+
     const user = await prisma.user.findUnique({
       where: { id: payload.userId },
       select: {

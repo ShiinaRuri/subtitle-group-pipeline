@@ -22,6 +22,7 @@ import storageRoutes from "./modules/storage/storage.routes";
 import announcementRoutes from "./modules/announcement/announcement.routes";
 import timelineRoutes from "./modules/timeline/timeline.routes";
 import qqRoutes from "./modules/qq/qq.routes";
+import { ensureBridgeToken } from "./modules/qq/qq.bridge";
 import systemRoutes from "./modules/system/system.routes";
 import setupRoutes from "./modules/setup/setup.routes";
 import { setupState } from "./modules/setup/setup.state";
@@ -85,9 +86,12 @@ export function createApp(options: { databaseReady?: boolean } = {}): Applicatio
   // Public download route (no auth required)
   app.get("/download/:token", downloadByToken);
 
-  // NoneBot QQ verification webhook (public)
+  // NoneBot QQ verification webhook (public, but requires QQ bridge token).
+  // R2: enforce bridge-token auth before any body parsing or Auth_Service calls.
+  // group_id is attacker-controllable and MUST NOT be used as a trust credential.
   app.post("/webhook/qq-verify", async (req, res, next) => {
     try {
+      await ensureBridgeToken(req);
       const { message, group_id } = req.body || {};
       if (!message || typeof message !== "string") {
         res.status(400).json({ success: false, error: "Missing message" });

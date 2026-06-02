@@ -13,6 +13,7 @@ import type {
 import { FileType, TaskRole, UserRole, TimelineEventType } from "@prisma/client";
 import * as timelineService from "../timeline/timeline.service";
 import {
+  DEFAULT_EXTENSION_ALLOWLIST,
   DEFAULT_ROLE_UPLOAD_POLICY,
   FONT_EXTENSIONS,
   FONT_MIME_TYPES,
@@ -211,6 +212,15 @@ function tryParseStringList(value: string | null | undefined): string[] {
   } catch {
     throw new AppError("Extension whitelist must be valid JSON string array", "VALIDATION_ERROR", 400);
   }
+}
+
+function normalizeExtensionAllowlist(extensions: string[]): string[] {
+  return Array.from(new Set(
+    extensions
+      .map((extension) => extension.trim().toLowerCase())
+      .filter(Boolean)
+      .map((extension) => extension.startsWith(".") ? extension : `.${extension}`)
+  ));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -685,23 +695,7 @@ export async function validateUpload(
     fileType?: FileType;
   } = {}
 ): Promise<ValidationResult> {
-  // Check blocked extensions (security)
   const ext = path.extname(file.originalname).toLowerCase();
-  if (BLOCKED_EXTENSIONS.includes(ext)) {
-    return { valid: false, error: `Executable files (${ext}) are not allowed` };
-  }
-
-  // Check blocked MIME patterns
-  for (const pattern of BLOCKED_MIME_PATTERNS) {
-    if (pattern.test(file.mimetype)) {
-      return { valid: false, error: "Executable file types are not allowed" };
-    }
-  }
-
-  const declaredTypeValidation = validateDeclaredFileType(options.fileType, file.mimetype, ext);
-  if (!declaredTypeValidation.valid) {
-    return declaredTypeValidation;
-  }
 
   const taskRole = await resolveUploadRole(
     projectId,
@@ -723,32 +717,38 @@ export async function validateUpload(
         : "No upload policy is configured for the uploader role",
     };
   }
+
   const { policy, allowedRule } = resolvedPolicy;
   const maxSize = toNumber(policy.max_size_bytes);
-  const whitelist = policy.extension_whitelist
-    ? tryParseStringList(policy.extension_whitelist)
-    : null;
+  const policyWhitelist = normalizeExtensionAllowlist(tryParseStringList(policy.extension_whitelist));
+  const baselineWhitelist = policyWhitelist.length > 0
+    ? policyWhitelist
+    : Array.from(DEFAULT_EXTENSION_ALLOWLIST);
+  const roleWhitelist = normalizeExtensionAllowlist(allowedRule.extensions);
+  const effectiveWhitelist = roleWhitelist.length > 0
+    ? baselineWhitelist.filter((extension) => roleWhitelist.includes(extension))
+    : baselineWhitelist;
 
-  // Check MIME/file asset type against global or role-specific policy
-  if (!matchesAllowedType(allowedRule, file.mimetype, ext, options.fileType)) {
-    const allowed = [
-      ...allowedRule.raw,
-      ...allowedRule.mimeTypes,
-      ...allowedRule.fileTypes,
-      ...allowedRule.extensions,
-    ];
+  // R10: extension allowlist is the primary trust boundary; client MIME is not
+  // trusted as an allow signal. Role-specific extension rules still narrow the
+  // baseline allowlist so existing upload policy matrices keep their meaning.
+  if (!effectiveWhitelist.includes(ext)) {
     return {
       valid: false,
-      error: `File type ${file.mimetype}${options.fileType ? `/${options.fileType}` : ""} is not allowed for ${taskRole || userRole}. Allowed: ${Array.from(new Set(allowed)).join(", ")}`,
+      error: `File extension ${ext || "(none)"} is not allowed. Allowed: ${effectiveWhitelist.join(", ")}`,
     };
   }
 
-  // Check extension whitelist
-  if (whitelist && whitelist.length > 0 && !whitelist.includes(ext)) {
-    return {
-      valid: false,
-      error: `File extension ${ext} is not allowed. Allowed: ${whitelist.join(", ")}`,
-    };
+  // Check blocked extensions (defense in depth)
+  if (BLOCKED_EXTENSIONS.includes(ext)) {
+    return { valid: false, error: `Executable files (${ext}) are not allowed` };
+  }
+
+  // Check blocked MIME patterns (defense in depth)
+  for (const pattern of BLOCKED_MIME_PATTERNS) {
+    if (pattern.test(file.mimetype)) {
+      return { valid: false, error: "Executable file types are not allowed" };
+    }
   }
 
   // Check global max size from env
@@ -1206,13 +1206,22 @@ export async function resolveCurrentVersion(fileId: string): Promise<void> {
 
 export async function getProjectFiles(
   projectId: string,
-  query: FileQueryInput
+  query: FileQueryInput,
+  userId: string,
+  userRole: UserRole
 ) {
   const page = query.page || 1;
   const pageSize = query.pageSize || 20;
   const skip = (page - 1) * pageSize;
 
   const resolvedProjectId = projectId || query.project_id || query.projectId;
+
+  // R4: enforce project membership BEFORE running any listing query so that
+  // non-members never see file metadata, and receive 403 instead of [].
+  if (!resolvedProjectId) {
+    throw new AppError("project_id is required", "VALIDATION_ERROR", 400);
+  }
+  await assertProjectViewPermission(resolvedProjectId, userId, userRole);
   const resolvedFileType = query.file_type || query.type;
   const resolvedUnitId = query.unit_id || query.unitId;
   const resolvedTaskId = query.task_id || query.taskId;
@@ -1454,7 +1463,11 @@ export async function getProjectFiles(
 
 // ============ Get File By ID ============
 
-export async function getFileById(fileId: string) {
+export async function getFileById(
+  fileId: string,
+  userId: string,
+  userRole: UserRole
+) {
   const file = await prisma.fileEntity.findUnique({
     where: { id: fileId },
     include: {
@@ -1464,6 +1477,9 @@ export async function getFileById(fileId: string) {
           username: true,
           nickname: true,
         },
+      },
+      project: {
+        select: { owner_id: true },
       },
       versions: {
         orderBy: { version_number: "desc" },
@@ -1480,6 +1496,9 @@ export async function getFileById(fileId: string) {
   if (!file) {
     throw new AppError("File not found", "NOT_FOUND", 404);
   }
+
+  // R4: authorize before returning any field of the file.
+  await assertFileViewPermission(file, userId, userRole);
 
   const metadata = parseMetadata(file.metadata);
   const currentVersion =
@@ -1523,14 +1542,26 @@ export async function getFileById(fileId: string) {
 
 // ============ Get File Versions ============
 
-export async function getFileVersions(fileId: string) {
+export async function getFileVersions(
+  fileId: string,
+  userId: string,
+  userRole: UserRole
+) {
   const file = await prisma.fileEntity.findUnique({
     where: { id: fileId },
+    include: {
+      project: {
+        select: { owner_id: true },
+      },
+    },
   });
 
   if (!file) {
     throw new AppError("File not found", "NOT_FOUND", 404);
   }
+
+  // R4: authorize before returning any version metadata.
+  await assertFileViewPermission(file, userId, userRole);
 
   const versions = await prisma.fileVersion.findMany({
     where: { file_id: fileId },
@@ -1714,6 +1745,46 @@ async function assertFileViewPermission(file: {
 
   if (!membership) {
     throw new AppError("Insufficient permissions to view this file", "FORBIDDEN", 403);
+  }
+}
+
+export async function assertProjectViewPermission(
+  projectId: string,
+  userId: string,
+  userRole: UserRole
+): Promise<void> {
+  if (!projectId) {
+    throw new AppError("Insufficient permissions to view this project", "FORBIDDEN", 403);
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { owner_id: true },
+  });
+
+  if (!project) {
+    throw new AppError("Project not found", "NOT_FOUND", 404);
+  }
+
+  if (["super_admin", "group_admin", "supervisor"].includes(userRole)) {
+    return;
+  }
+
+  if (project.owner_id === userId) {
+    return;
+  }
+
+  const membership = await prisma.projectMember.findFirst({
+    where: {
+      project_id: projectId,
+      user_id: userId,
+      left_at: null,
+    },
+    select: { id: true },
+  });
+
+  if (!membership) {
+    throw new AppError("Insufficient permissions to view this project", "FORBIDDEN", 403);
   }
 }
 

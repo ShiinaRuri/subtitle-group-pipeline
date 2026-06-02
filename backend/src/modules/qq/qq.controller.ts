@@ -1,19 +1,11 @@
 import { Request, Response, NextFunction } from "express";
-import { AppError, successResponse } from "../../utils/response";
+import { successResponse } from "../../utils/response";
 import * as authService from "../auth/auth.service";
 import * as systemService from "../system/system.service";
 import { sendGroupMessage, sendPrivateMessage } from "../notification/adapters/qq.adapter";
+import { ensureBridgeToken } from "./qq.bridge";
 
-async function ensureBridgeToken(req: Request) {
-  const settings = await systemService.getQqBridgeRuntimeSettings();
-  if (!settings.secret) return;
-
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-  if (token !== settings.secret) {
-    throw new AppError("Invalid QQ bridge token", "UNAUTHORIZED", 401);
-  }
-}
+export { ensureBridgeToken };
 
 function extractVerifyCode(body: Record<string, unknown>) {
   const code = typeof body.code === "string" ? body.code.trim() : "";

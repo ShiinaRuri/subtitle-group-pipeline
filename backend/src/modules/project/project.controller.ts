@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { successResponse } from "../../utils/response";
 import { AuthenticatedRequest } from "../../middleware/auth";
+import { UserRole } from "@prisma/client";
 import * as projectService from "./project.service";
 import * as subtitleService from "../subtitle/subtitle.service";
 import * as announcementService from "../announcement/announcement.service";
@@ -55,12 +56,16 @@ export async function getProjects(
 }
 
 export async function getProject(
-  req: Request,
+  req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
-    const result = await projectService.getProjectById(getParam(req, "id"));
+    const result = await projectService.getProjectById(
+      getParam(req, "id"),
+      req.user!.id,
+      req.user!.role as UserRole
+    );
     successResponse(res, result);
   } catch (error) {
     next(error);
@@ -180,12 +185,16 @@ export async function permanentlyDeleteProject(
 }
 
 export async function getProjectMembers(
-  req: Request,
+  req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
-    const result = await projectService.getProjectMembers(getParam(req, "id"));
+    const result = await projectService.getProjectMembers(
+      getParam(req, "id"),
+      req.user!.id,
+      req.user!.role as UserRole
+    );
     successResponse(res, result);
   } catch (error) {
     next(error);

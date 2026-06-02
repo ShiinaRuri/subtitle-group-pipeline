@@ -57,6 +57,29 @@ export const PACKAGE_MIME_TYPES = [
   "application/octet-stream",
 ];
 
+/**
+ * Canonical set of file extensions allowed by the platform's default upload
+ * policy. Aggregates the per-category arrays (subtitle / video / font /
+ * package / release) into a single source of truth so that:
+ *
+ *   - `validateUpload` (R10) can use it as the primary allowlist gate when
+ *     `policy.extension_whitelist` is unset.
+ *   - `DEFAULT_ROLE_UPLOAD_POLICY.extensionWhitelist` derives from the same
+ *     set, avoiding double maintenance of "what's allowed by default".
+ *
+ * All entries are lowercase and include the leading `.` so callers can match
+ * directly against `path.extname(name).toLowerCase()`.
+ *
+ * Requirements: 10.1
+ */
+export const DEFAULT_EXTENSION_ALLOWLIST: ReadonlySet<string> = new Set<string>([
+  ...VIDEO_EXTENSIONS,
+  ...SUBTITLE_EXTENSIONS,
+  ...FONT_EXTENSIONS,
+  ...PACKAGE_EXTENSIONS,
+  ...RELEASE_EXTENSIONS,
+]);
+
 export const DEFAULT_ROLE_UPLOAD_POLICY = {
   roles: {
     source: {
@@ -112,11 +135,5 @@ export const DEFAULT_ROLE_UPLOAD_POLICY = {
   },
   maxSize: 536870912000,
   requireApproval: false,
-  extensionWhitelist: Array.from(new Set([
-    ...VIDEO_EXTENSIONS,
-    ...SUBTITLE_EXTENSIONS,
-    ...FONT_EXTENSIONS,
-    ...PACKAGE_EXTENSIONS,
-    ...RELEASE_EXTENSIONS,
-  ])),
+  extensionWhitelist: Array.from(DEFAULT_EXTENSION_ALLOWLIST),
 };
