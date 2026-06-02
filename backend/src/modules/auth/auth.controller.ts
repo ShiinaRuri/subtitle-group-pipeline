@@ -351,12 +351,12 @@ export async function grantMemberTagStatuses(
 }
 
 export async function getAllUsers(
-  _req: Request,
+  req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
-    const result = await authService.getAllUsers();
+    const result = await authService.getAllUsers(req.user?.role);
     successResponse(res, { items: result });
   } catch (error) {
     next(error);

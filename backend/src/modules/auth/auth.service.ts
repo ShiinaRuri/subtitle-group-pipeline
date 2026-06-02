@@ -1225,6 +1225,10 @@ const privilegedUserSelect = {
   qq_number: true,
 };
 
+function canViewUserPii(role?: string | null): boolean {
+  return role === "super_admin" || role === "group_admin" || role === "supervisor";
+}
+
 function serializeManagedUser<T extends { tag_applications?: Array<{ tag: unknown }> }>(user: T) {
   const { tag_applications, ...rest } = user;
   return {
@@ -1425,9 +1429,10 @@ export async function grantMemberTagStatuses(
   return serializeManagedUser(updated);
 }
 
-export async function getAllUsers() {
+export async function getAllUsers(requesterRole?: string | null) {
+  const select = canViewUserPii(requesterRole) ? privilegedUserSelect : baseUserSelect;
   const users = await prisma.user.findMany({
-    select: privilegedUserSelect,
+    select,
     orderBy: { created_at: "desc" },
   });
   return users.map(serializeManagedUser);
