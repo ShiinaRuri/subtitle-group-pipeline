@@ -2,6 +2,7 @@ import { execFile, spawn } from "child_process";
 import { PrismaClient } from "@prisma/client";
 import crypto from "crypto";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { promisify } from "util";
 import { prisma, configurePrisma, canConnectDatabase } from "../../config/database";
@@ -57,9 +58,32 @@ function updateEnvFile(updates: Record<string, string>) {
   fs.writeFileSync(ENV_PATH, next.filter((line, index, array) => line || index < array.length - 1).join("\n") + "\n");
 }
 
-function buildPrismaSchema(provider: "sqlite" | "mysql" | "postgresql") {
+function normalizePrismaSchemaPath(filePath: string) {
+  return filePath.replace(/\\/g, "/");
+}
+
+function buildPrismaSchema(
+  provider: "sqlite" | "mysql" | "postgresql",
+  options: { clientOutputDir?: string } = {}
+) {
   const schema = fs.readFileSync(SCHEMA_PATH, "utf8");
-  return schema.replace(/provider\s*=\s*"(sqlite|mysql|postgresql)"/, `provider = "${provider}"`);
+  const providerSchema = schema.replace(
+    /provider\s*=\s*"(sqlite|mysql|postgresql)"/,
+    `provider = "${provider}"`
+  );
+
+  if (!options.clientOutputDir) {
+    return providerSchema;
+  }
+
+  const output = JSON.stringify(normalizePrismaSchemaPath(options.clientOutputDir));
+  return providerSchema.replace(/generator\s+client\s*{[\s\S]*?}/, (block) => {
+    if (/^\s*output\s*=/m.test(block)) {
+      return block.replace(/^\s*output\s*=\s*"[^"]*"/m, `  output   = ${output}`);
+    }
+
+    return block.replace(/\n}/, `\n  output   = ${output}\n}`);
+  });
 }
 
 async function syncSchema(
@@ -248,17 +272,6 @@ async function upgradeLegacyTranslationTaskOrder(
   }
 }
 
-async function generatePrismaClient(databaseUrl: string, provider: "sqlite" | "mysql" | "postgresql") {
-  const env = { ...process.env, DATABASE_URL: databaseUrlForPrismaCli(databaseUrl, provider) };
-  const tempSchemaPath = path.join(SCHEMA_DIR, `.setup-generate-${crypto.randomUUID()}.prisma`);
-  try {
-    fs.writeFileSync(tempSchemaPath, buildPrismaSchema(provider));
-    await runPrismaCommand(["generate", "--schema", tempSchemaPath], env);
-  } finally {
-    fs.rmSync(tempSchemaPath, { force: true });
-  }
-}
-
 function isRespawnManagedProcess() {
   const argv = process.argv.join(" ").toLowerCase();
   return Boolean(
@@ -433,6 +446,65 @@ async function runPrismaCommand(args: string[], env: NodeJS.ProcessEnv) {
   }
 }
 
+type PrismaClientConstructor = new (
+  options?: ConstructorParameters<typeof PrismaClient>[0]
+) => PrismaClient;
+
+async function createTemporaryPrismaClient(
+  databaseUrl: string,
+  provider: "mysql" | "postgresql"
+) {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "subtitle-setup-prisma-"));
+  const clientOutputDir = path.join(tempRoot, "client");
+  const tempSchemaPath = path.join(tempRoot, "schema.prisma");
+  const env = { ...process.env, DATABASE_URL: databaseUrlForPrismaCli(databaseUrl, provider) };
+
+  try {
+    fs.writeFileSync(tempSchemaPath, buildPrismaSchema(provider, { clientOutputDir }));
+    await runPrismaCommand(["generate", "--schema", tempSchemaPath], env);
+
+    // Load the provider-specific generated client from its temp output. This
+    // avoids replacing node_modules/.prisma/client while the live process has
+    // the default query engine loaded, which is especially important on Windows.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const generated = require(clientOutputDir) as { PrismaClient: PrismaClientConstructor };
+    const client = new generated.PrismaClient({
+      datasources: {
+        db: { url: databaseUrl },
+      },
+      log: process.env.NODE_ENV === "development" ? ["error"] : ["error"],
+    });
+
+    await client.$connect();
+
+    return {
+      client,
+      cleanup: async () => {
+        await client.$disconnect().catch(() => undefined);
+        for (const cacheKey of Object.keys(require.cache)) {
+          if (cacheKey.startsWith(clientOutputDir)) {
+            delete require.cache[cacheKey];
+          }
+        }
+        try {
+          fs.rmSync(tempRoot, { recursive: true, force: true });
+        } catch {
+          // Windows may keep the provider DLL mapped until process exit.
+          // Leaving a temp client directory behind is safer than failing an
+          // otherwise successful bootstrap.
+        }
+      },
+    };
+  } catch (error) {
+    try {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup only; preserve the original setup error.
+    }
+    throw error;
+  }
+}
+
 function formatPrismaCommandError(error: unknown): string {
   const commandError = error as Error & { stderr?: string; stdout?: string };
   const raw = (commandError.stderr || commandError.stdout || commandError.message || "").trim();
@@ -486,11 +558,12 @@ export async function getSetupStatus() {
 }
 
 async function createInitialSetupRecords(
+  db: Pick<PrismaClient, "$transaction">,
   input: CompleteSetupInput,
   passwordHash: string,
   storageConfig: string
 ) {
-  const [admin, storage] = await prisma.$transaction(async (tx) => {
+  const [admin, storage] = await db.$transaction(async (tx) => {
     const createdAdmin = await tx.user.create({
       data: {
         username: input.admin.username,
@@ -532,6 +605,21 @@ async function createInitialSetupRecords(
   return { admin, storage };
 }
 
+async function getSetupStatusFromClient(
+  db: Pick<PrismaClient, "user" | "storageBackend">
+) {
+  const [adminCount, defaultStorageCount] = await Promise.all([
+    db.user.count({ where: { role: "super_admin" } }),
+    db.storageBackend.count({ where: { is_default: true, is_active: true } }),
+  ]);
+
+  return {
+    initialized: adminCount > 0 && defaultStorageCount > 0,
+    adminExists: adminCount > 0,
+    storageReady: defaultStorageCount > 0,
+  };
+}
+
 export async function completeSetup(input: CompleteSetupInput) {
   // R1 (security-vulnerability-remediation): Unified initialized-state guard.
   // This must run BEFORE any side effects — schema sync, bootstrap writes,
@@ -559,15 +647,22 @@ export async function completeSetup(input: CompleteSetupInput) {
   await syncSchema(databaseUrl, selectedProvider);
 
   if (selectedProvider !== "sqlite") {
-    await generatePrismaClient(databaseUrl, selectedProvider);
-    await configurePrisma(databaseUrl);
+    const tempPrisma = await createTemporaryPrismaClient(databaseUrl, selectedProvider);
+    let admin: Awaited<ReturnType<typeof createInitialSetupRecords>>["admin"];
+    let storage: Awaited<ReturnType<typeof createInitialSetupRecords>>["storage"];
 
-    const status = await getSetupStatus();
-    if (status.initialized) {
-      throw new AppError("System is already initialized", "ALREADY_INITIALIZED", 409);
+    try {
+      const status = await getSetupStatusFromClient(tempPrisma.client);
+      if (status.initialized) {
+        throw new AppError("System is already initialized", "ALREADY_INITIALIZED", 409);
+      }
+
+      const created = await createInitialSetupRecords(tempPrisma.client, input, passwordHash, config);
+      admin = created.admin;
+      storage = created.storage;
+    } finally {
+      await tempPrisma.cleanup();
     }
-
-    const { admin, storage } = await createInitialSetupRecords(input, passwordHash, config);
 
     updateEnvFile({ DATABASE_URL: databaseUrl, JWT_SECRET: input.security.jwt_secret });
     process.env.DATABASE_URL = databaseUrl;
@@ -597,7 +692,7 @@ export async function completeSetup(input: CompleteSetupInput) {
     throw new AppError("System is already initialized", "ALREADY_INITIALIZED", 409);
   }
 
-  const { admin, storage } = await createInitialSetupRecords(input, passwordHash, config);
+  const { admin, storage } = await createInitialSetupRecords(prisma, input, passwordHash, config);
 
   setupState.databaseReady = true;
 

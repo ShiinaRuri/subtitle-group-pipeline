@@ -45,6 +45,7 @@ export function createApp(options: { databaseReady?: boolean } = {}): Applicatio
   setupState.databaseReady = options.databaseReady ?? setupState.databaseReady;
 
   // Security middleware
+  app.set("trust proxy", env.TRUST_PROXY_HOPS);
   app.use(helmet());
   app.use(
     cors({
