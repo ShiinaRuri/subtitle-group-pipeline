@@ -177,7 +177,7 @@ describe("Notification Tests", () => {
       const task = await createTestTask({
         project_id: project.id,
         unit_id: unit.id,
-        role: "post_production",
+        role: "translation",
         status: "in_progress",
         assignee_id: translator.id,
         creator_id: owner.id,
@@ -212,7 +212,7 @@ describe("Notification Tests", () => {
       const approvedTask = await createTestTask({
         project_id: project.id,
         unit_id: unit.id,
-        role: "post_production",
+        role: "translation",
         status: "submitted",
         assignee_id: translator.id,
         creator_id: owner.id,
@@ -282,7 +282,7 @@ describe("Notification Tests", () => {
       const upstream = await createTestTask({
         project_id: project.id,
         unit_id: unit.id,
-        role: "post_production",
+        role: "translation",
         status: "submitted",
         assignee_id: translator.id,
         creator_id: owner.id,

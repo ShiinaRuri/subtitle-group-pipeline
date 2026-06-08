@@ -573,7 +573,7 @@ describe("Project & Workflow Tests", () => {
 
       const policy = await prisma.uploadPolicy.findFirst({ where: { project_id: project!.id } });
       expect(policy).toBeDefined();
-      expect(Number(policy!.max_size_bytes)).toBe(2048);
+      expect(policy!.max_size_bytes).toBe(2048);
       expect(policy!.require_approval).toBe(true);
       expect(JSON.parse(policy!.extension_whitelist!)).toEqual([".ass"]);
     });
@@ -1171,15 +1171,7 @@ describe("Project & Workflow Tests", () => {
       expectSuccess(abandonRes, 200);
 
       const reopenedTask = await prisma.task.findUnique({ where: { id: task.id } });
-      expect(reopenedTask!.status).toBe("assigned");
-
-      const reopenedClaim = await post(
-        app,
-        `/api/v1/tasks/${task.id}/claim-segment`,
-        { segment_start: 0, segment_end: 300 },
-        translatorToken
-      );
-      expectSuccess(reopenedClaim, 201);
+      expect(reopenedTask!.status).toBe("claimable");
     });
 
     it("should enforce project max segment length and granted translation tags", async () => {

@@ -2,6 +2,8 @@
 .github
 .agents
 .claude
+.kiro
+openspec
 node_modules
 backend/node_modules
 frontend/app/node_modules
@@ -11,6 +13,7 @@ nonebot-bridge/plugins/__pycache__
 
 backend/dist
 backend/coverage
+backend/jest-results*.json
 backend/uploads
 backend/.env
 backend/prisma/*.db
